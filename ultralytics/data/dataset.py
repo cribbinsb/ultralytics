@@ -289,12 +289,11 @@ class YOLOMultilabelDataset(YOLODataset):
                 ne += ne_f
                 nc += nc_f
                 if im_file:
-                    unique_bboxes, indices = np.unique(lb[:, 1:], axis=0, return_inverse=True)
+                    unique_bboxes, fwd_index, indices = np.unique(lb[:, 1:], axis=0, return_index=True, return_inverse=True)
                     assert unique_bboxes.shape == (
                         unique_bboxes.shape[0],
                         4,
                     ), f"unique_bboxes.shape {unique_bboxes.shape}"
-
                     def one_hot_encode(labels, num_classes):
                         one_hot = np.zeros(num_classes)
                         one_hot[labels] = 1.0
@@ -304,7 +303,9 @@ class YOLOMultilabelDataset(YOLODataset):
                     labels = np.zeros((len(unique_bboxes), num_classes))
                     for i in range(len(unique_bboxes)):
                         labels[i] = one_hot_encode(lb[indices == i, 0].astype(np.int32), num_classes)
-
+                    # MDB: fix keypoints for reduced boxes
+                    keypoint2=keypoint[fwd_index]
+                    assert(len(keypoint2)==len(unique_bboxes))
                     x["labels"].append(
                         {
                             "im_file": im_file,
@@ -312,7 +313,7 @@ class YOLOMultilabelDataset(YOLODataset):
                             "cls": labels,  # n, num_classes
                             "bboxes": unique_bboxes,  # n, 4
                             "segments": segments,
-                            "keypoints": keypoint,
+                            "keypoints": keypoint2,
                             "normalized": True,
                             "bbox_format": "xywh",
                         }

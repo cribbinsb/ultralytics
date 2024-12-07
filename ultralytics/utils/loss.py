@@ -161,9 +161,16 @@ class v8DetectionLoss:
         """Initializes v8DetectionLoss with the model, defining model-related properties and BCE loss function."""
         device = next(model.parameters()).device  # get model device
         h = model.args  # hyperparameters
-
+        #vole=self.data.get("vole",5)
         m = model.model[-1]  # Detect() module
-        self.bce = nn.BCEWithLogitsLoss(reduction="none")
+
+        # MDB : experiment weight the class loss for the non-attribute classes higher
+        #print("\n\n\nNAMES",model.names,"\n\n\n")
+        #pos_weight = torch.ones(m.nc)  # Initialize with equal weights
+        #pos_weight[:5] = 8.0
+        #pos_weight=pos_weight.to(device)
+
+        self.bce = nn.BCEWithLogitsLoss(reduction="none")  #, pos_weight=pos_weight)
         self.hyp = h
         self.stride = m.stride  # model strides
         self.nc = m.nc  # number of classes
@@ -477,9 +484,9 @@ class v8PoseLoss(v8DetectionLoss):
         # Targets
         batch_size = pred_scores.shape[0]
         batch_idx = batch["batch_idx"].view(-1, 1)
-        targets = torch.cat((batch_idx, batch["cls"].view(-1, 1), batch["bboxes"]), 1)
+        targets = torch.cat((batch_idx, batch["cls"], batch["bboxes"]), 1)
         targets = self.preprocess(targets.to(self.device), batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
-        gt_labels, gt_bboxes = targets.split((1, 4), 2)  # cls, xyxy
+        gt_labels, gt_bboxes = targets.split((self.nc, 4), 2)  # cls, xyxy
         mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0.0)
 
         # Pboxes
@@ -500,6 +507,7 @@ class v8PoseLoss(v8DetectionLoss):
         # Cls loss
         # loss[1] = self.varifocal_loss(pred_scores, target_scores, target_labels) / target_scores_sum  # VFL way
         loss[3] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+
 
         # Bbox loss
         if fg_mask.sum():

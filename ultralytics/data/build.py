@@ -84,6 +84,7 @@ def seed_worker(worker_id):  # noqa
 def build_yolo_dataset(cfg, img_path, batch, data, mode="train", rect=False, stride=32, multi_modal=False):
     """Build YOLO Dataset."""
     if cfg.multilabel:
+        print("\n*** USING MULTILABEL ***\n\n")
         dataset = YOLOMultilabelDataset
     elif multi_modal:
         dataset = YOLOMultiModalDataset
