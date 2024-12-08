@@ -463,12 +463,12 @@ class v8PoseLoss(v8DetectionLoss):
         is_facepose = self.kpt_shape == [22, 3]
         nkpt = self.kpt_shape[0]  # number of keypoints
         if is_pose:
-            self.sigma = torch.from_numpy(OKS_SIGMA)
+            sigmas = torch.from_numpy(OKS_SIGMA)
         elif is_facepose:
             print("Using facepose sigmas...")
-            self.sigma = torch.from_numpy(FACEPOSE_SIGMA)
+            sigmas = torch.from_numpy(FACEPOSE_SIGMA)
         else:
-            self.sigma = torch.ones(nkpt, device=self.device) / nkpt
+            sigmas = torch.ones(nkpt, device=self.device) / nkpt
 
         self.keypoint_loss = KeypointLoss(sigmas=sigmas)
 
