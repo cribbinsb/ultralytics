@@ -106,13 +106,24 @@ class DetectionValidator(BaseValidator):
         idx = batch["batch_idx"] == si
         cls = batch["cls"][idx]
         bbox = batch["bboxes"][idx]
+
+        # mdb: multi-label - replicate/expand GT keypoints 
+        rows, cols = torch.where(cls == 1)
+        num_classes = cls.size(1)
+        new_cls = torch.zeros((len(rows), num_classes), dtype=torch.int)
+        new_cls[torch.arange(len(rows)), cols] = 1
+        # Replicate the box tensor correspondingly
+        new_bbox = bbox[rows]
+        cls=new_cls.to(self.device)
+        bbox=new_bbox.to(self.device)
+
         ori_shape = batch["ori_shape"][si]
         imgsz = batch["img"].shape[2:]
         ratio_pad = batch["ratio_pad"][si]
         if len(cls):
             bbox = ops.xywh2xyxy(bbox) * torch.tensor(imgsz, device=self.device)[[1, 0, 1, 0]]  # target boxes
             ops.scale_boxes(imgsz, bbox, ori_shape, ratio_pad=ratio_pad)  # native-space labels
-        return {"cls": cls, "bbox": bbox, "ori_shape": ori_shape, "imgsz": imgsz, "ratio_pad": ratio_pad}
+        return {"cls": cls, "bbox": bbox, "ori_shape": ori_shape, "imgsz": imgsz, "ratio_pad": ratio_pad, "rows":rows}
 
     def _prepare_pred(self, pred, pbatch):
         """Prepares a batch of images and annotations for validation."""

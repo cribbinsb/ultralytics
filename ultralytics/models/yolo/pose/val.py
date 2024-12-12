@@ -98,7 +98,8 @@ class PoseValidator(DetectionValidator):
         kpts[..., 0] *= w
         kpts[..., 1] *= h
         kpts = ops.scale_coords(pbatch["imgsz"], kpts, pbatch["ori_shape"], ratio_pad=pbatch["ratio_pad"])
-        pbatch["kpts"] = kpts
+        # mdb: multi-label - replicate/expand GT keypoints 
+        pbatch["kpts"] = kpts[pbatch["rows"]]
         return pbatch
 
     def _prepare_pred(self, pred, pbatch):
