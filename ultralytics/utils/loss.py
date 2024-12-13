@@ -166,11 +166,14 @@ class v8DetectionLoss:
 
         # MDB : experiment weight the class loss for the non-attribute classes higher
         #print("\n\n\nNAMES",model.names,"\n\n\n")
-        #pos_weight = torch.ones(m.nc)  # Initialize with equal weights
-        #pos_weight[:5] = 8.0
-        #pos_weight=pos_weight.to(device)
+        pos_weight = torch.ones(m.nc)  # Initialize with equal weights
+        pos_weight[0] = 2.0
+        pos_weight[1] = 2.0
+        pos_weight[4] = 3
 
-        self.bce = nn.BCEWithLogitsLoss(reduction="none")  #, pos_weight=pos_weight)
+        pos_weight=pos_weight.to(device)
+
+        self.bce = nn.BCEWithLogitsLoss(reduction="none", pos_weight=pos_weight)
         self.hyp = h
         self.stride = m.stride  # model strides
         self.nc = m.nc  # number of classes
