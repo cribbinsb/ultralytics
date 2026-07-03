@@ -839,6 +839,10 @@ class ReIDAdapterV2(nn.Module):
         emb = self.mlp(feats)
         # eps=1e-4 is within fp16's normal range (min normal ~6e-5), so the
         # divisor never underflows even when emb magnitude is tiny.
+        emb = F.normalize(emb, p=2, dim=1, eps=1e-4)
+        center = getattr(self, "embed_center", None)
+        if center is not None:
+            emb = emb - center.to(device=emb.device, dtype=emb.dtype)
         return F.normalize(emb, p=2, dim=1, eps=1e-4)
 
 
@@ -857,6 +861,8 @@ def build_reid_adapter_from_state_dict(state_dict, device="cpu"):
         hidden2 = int(state_dict["mlp.4.weight"].shape[0])
         emb = int(state_dict["mlp.8.weight"].shape[0])
         model = ReIDAdapterV2(in_dim=in_dim, hidden1=hidden1, hidden2=hidden2, emb=emb).to(device)
+        if "embed_center" in state_dict:
+            model.register_buffer("embed_center", torch.zeros_like(state_dict["embed_center"]))
     else:
         film_w = state_dict["film.0.weight"]
         feat_dim = int(film_w.shape[0] // 2)

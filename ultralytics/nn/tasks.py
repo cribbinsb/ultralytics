@@ -1608,6 +1608,8 @@ def load_checkpoint(weight, device=None, inplace=True, fuse=False):
             elif isinstance(head, (PoseReID, Pose26ReID)) and head.__class__ is not new_head_cls:
                 head.__class__ = new_head_cls
             head.reid = adapter_cls(in_dim=int(promo["in_dim"]), emb=int(promo["emb"]))
+            if promo.get("has_embed_center"):
+                head.reid.register_buffer("embed_center", torch.zeros(int(promo["emb"])))
         with torch.no_grad():
             mto.restore_from_modelopt_state(model, ckpt["modelopt_state"])
             if promo:
