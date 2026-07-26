@@ -752,6 +752,9 @@ class ClassificationModel(BaseModel):
 
     def init_criterion(self):
         """Initialize the loss criterion for the ClassificationModel."""
+        if isinstance(self.model[-1], VehicleClassify):
+            from ultralytics.utils.loss import VehicleClsLoss
+            return VehicleClsLoss(self)   # multi-head vehicle-attrs loss (see VehicleClassify)
         return v8ClassificationLoss()
 
 

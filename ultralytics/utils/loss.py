@@ -1427,3 +1427,58 @@ class TVPSegmentLoss(TVPDetectLoss):
         vp_loss = self.vp_criterion(preds, batch)
         cls_loss = vp_loss[0][2]
         return cls_loss, vp_loss[1]
+
+
+class VehicleClsLoss:
+    """Multi-head loss for VehicleClassify (ubon_vehicles vehicle-attrs classifier).
+
+    Port of ubon_vehicles/train_vehicle_cls.py compute_loss()+make_usable_boost() (the settled
+    all_soft_lowunk+boost8 recipe) into the ultralytics engine. Batch contract: per head H,
+    "t_H" soft-target tensor and "m_H" mask scalar per sample; preds are the VehicleClassify
+    training-mode logits dict. Trainer configures the public attributes after model build.
+    """
+
+    SOFTMAX_HEADS = ("type", "make", "view")
+    SIGMOID_HEADS = ("colour", "special_role", "quality", "plate")
+
+    def __init__(self, model):
+        self.head_weights = {"colour": 1.0, "type": 1.0, "special_role": 1.0,
+                             "make": 2.5, "view": 0.5, "quality": 0.5, "plate": 0.5}
+        self.label_temp = 0.85      # sharpen make soft teacher labels (<1)
+        self.brand_mult = 3.0       # loss boost for usable specific-brand samples
+        self.unknown_mult = 0.25    # loss down-weight for unknown-top samples
+        self.unknown_idx = None     # set by trainer from the taxonomy
+        self.other_idx = None
+
+    @staticmethod
+    def _soft_ce(logits, target, label_temp=1.0):
+        if label_temp != 1.0:
+            target = target.clamp_min(1e-8).pow(1.0 / label_temp)
+            target = target / target.sum(dim=1, keepdim=True)
+        return -(target * torch.nn.functional.log_softmax(logits, dim=1)).sum(dim=1)
+
+    def _make_boost(self, targets, masks):
+        top = targets.argmax(1)
+        brand = masks > 0.5
+        if self.unknown_idx is not None:
+            brand = brand & (top != self.unknown_idx)
+        if self.other_idx is not None:
+            brand = brand & (top != self.other_idx)
+        boost = torch.ones_like(masks) * self.unknown_mult
+        return torch.where(brand, torch.ones_like(masks) * self.brand_mult, boost)
+
+    def __call__(self, preds, batch):
+        preds = preds[1] if isinstance(preds, (list, tuple)) else preds
+        total = preds["type"].sum() * 0.0
+        for head in self.SOFTMAX_HEADS:
+            per = self._soft_ce(preds[head], batch[f"t_{head}"],
+                                self.label_temp if head == "make" else 1.0)
+            mask = batch[f"m_{head}"]
+            weight = mask * self._make_boost(batch["t_make"], batch["m_make"]) if head == "make" else mask
+            total = total + self.head_weights[head] * (per * weight).sum() / weight.sum().clamp_min(1.0)
+        for head in self.SIGMOID_HEADS:
+            per = torch.nn.functional.binary_cross_entropy_with_logits(
+                preds[head], batch[f"t_{head}"], reduction="none").mean(dim=1)
+            mask = batch[f"m_{head}"]
+            total = total + self.head_weights[head] * (per * mask).sum() / mask.sum().clamp_min(1.0)
+        return total, total.detach()
