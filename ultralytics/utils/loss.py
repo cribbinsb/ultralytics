@@ -1449,6 +1449,8 @@ class VehicleClsLoss:
         self.unknown_mult = 0.25    # loss down-weight for unknown-top samples
         self.unknown_idx = None     # set by trainer from the taxonomy
         self.other_idx = None
+        self.plate_obj_weight = 1.0   # plate-box branch (ALPR.md 7b); no-ops without
+        self.plate_box_weight = 2.0   # plate_obj preds + t_plate_box in the batch
 
     @staticmethod
     def _soft_ce(logits, target, label_temp=1.0):
@@ -1467,6 +1469,39 @@ class VehicleClsLoss:
         boost = torch.ones_like(masks) * self.unknown_mult
         return torch.where(brand, torch.ones_like(masks) * self.brand_mult, boost)
 
+    def _plate_box_loss(self, preds, batch):
+        """Single-instance plate-box terms (ALPR.md 7b): masked per-cell objectness BCE
+        (positives + confident-absent negatives) + CIoU at the target cell."""
+        obj = preds["plate_obj"].float()                              # fp32 under AMP
+        ltrb = preds["plate_ltrb"].float()
+        b, _, gh, gw = obj.shape
+        t_box = batch["t_plate_box"].float()                          # [B,4] cxcywh, 0..1
+        m_pos = batch["m_plate_box"].float()                          # [B] box supervision
+        m_obj = (m_pos + batch["m_plate_neg"].float()).clamp(max=1.0)  # [B] objectness supervision
+        device = obj.device
+
+        cx, cy = t_box[:, 0], t_box[:, 1]
+        gj = (cx * gw).long().clamp(0, gw - 1)
+        gi = (cy * gh).long().clamp(0, gh - 1)
+        t_obj = torch.zeros_like(obj)
+        idx = torch.arange(b, device=device)
+        t_obj[idx, 0, gi, gj] = m_pos                                 # positive cell only when box-valid
+        per_cell = torch.nn.functional.binary_cross_entropy_with_logits(
+            obj, t_obj, reduction="none",
+            pos_weight=torch.tensor(float(gh * gw) / 4.0, device=device))
+        obj_loss = (per_cell.mean(dim=(1, 2, 3)) * m_obj).sum() / m_obj.sum().clamp_min(1.0)
+
+        # box CIoU at the TARGET cell (teacher forcing), positives only
+        d = ltrb.sigmoid()[idx, :, gi, gj] * 0.5                      # [B,4] normalized ltrb
+        ax, ay = (gj.float() + 0.5) / gw, (gi.float() + 0.5) / gh
+        pred = torch.stack([ax - d[:, 0], ay - d[:, 1], ax + d[:, 2], ay + d[:, 3]], 1)
+        tgt = torch.stack([cx - t_box[:, 2] / 2, cy - t_box[:, 3] / 2,
+                           cx + t_box[:, 2] / 2, cy + t_box[:, 3] / 2], 1)
+        from ultralytics.utils.metrics import bbox_iou
+        ciou = bbox_iou(pred, tgt, xywh=False, CIoU=True).squeeze(-1)
+        box_loss = ((1.0 - ciou) * m_pos).sum() / m_pos.sum().clamp_min(1.0)
+        return self.plate_obj_weight * obj_loss + self.plate_box_weight * box_loss
+
     def __call__(self, preds, batch):
         preds = preds[1] if isinstance(preds, (list, tuple)) else preds
         total = preds["type"].sum() * 0.0
@@ -1481,4 +1516,6 @@ class VehicleClsLoss:
                 preds[head], batch[f"t_{head}"], reduction="none").mean(dim=1)
             mask = batch[f"m_{head}"]
             total = total + self.head_weights[head] * (per * mask).sum() / mask.sum().clamp_min(1.0)
+        if "plate_obj" in preds and "t_plate_box" in batch:
+            total = total + self._plate_box_loss(preds, batch)
         return total, total.detach()

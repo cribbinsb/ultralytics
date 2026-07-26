@@ -1257,7 +1257,7 @@ class VehicleClassify(nn.Module):
 
     def __init__(
         self,
-        c1: int,
+        c1: int | list[int],
         colour_nc: int,
         type_nc: int,
         role_nc: int,
@@ -1265,6 +1265,7 @@ class VehicleClassify(nn.Module):
         view_nc: int,
         quality_nc: int = 7,
         plate_nc: int = 2,
+        plate_box: bool = False,
         k: int = 1,
         s: int = 1,
         p: int | None = None,
@@ -1273,7 +1274,9 @@ class VehicleClassify(nn.Module):
         """Initialize vehicle multi-head classifier.
 
         Args:
-            c1: Input channels from the backbone.
+            c1: Input channels from the backbone. With plate_box, a [P4, P5] channel list —
+                the classification stem consumes P5 (unchanged behaviour); the plate-box
+                branch consumes P4.
             colour_nc: Colour head size (sigmoid).
             type_nc: Type head size (softmax).
             role_nc: Special-role head size (sigmoid).
@@ -1281,6 +1284,9 @@ class VehicleClassify(nn.Module):
             view_nc: View head size (softmax).
             quality_nc: Quality head size (sigmoid).
             plate_nc: Plate present/readable head size (sigmoid).
+            plate_box: Enable the single-instance plate-box branch on P4 (anchor-free
+                per-cell obj + ltrb; argmax decode — one centred vehicle means the best
+                cell IS the assignment, no NMS). See ubon_cstuff docs/research/ALPR.md.
             k: Stem conv kernel size.
             s: Stem conv stride.
             p: Stem conv padding.
@@ -1288,6 +1294,11 @@ class VehicleClassify(nn.Module):
         """
         super().__init__()
         c_ = 1280
+        self.plate_box = plate_box
+        if isinstance(c1, (list, tuple)):
+            c4, c1 = c1
+        else:
+            c4 = None
         self.colour_nc = colour_nc
         self.type_nc = type_nc
         self.role_nc = role_nc
@@ -1305,11 +1316,39 @@ class VehicleClassify(nn.Module):
         self.view = nn.Linear(c_, view_nc)
         self.quality = nn.Linear(c_, quality_nc)
         self.plate = nn.Linear(c_, plate_nc)
+        if plate_box:
+            assert c4 is not None, "plate_box=True needs from=[P4, P5] in the yaml"
+            c_pb = 64
+            self.pb_stem = nn.Sequential(Conv(c4, c_pb, 3), Conv(c_pb, c_pb, 3))
+            self.pb_obj = nn.Conv2d(c_pb, 1, 1)
+            self.pb_ltrb = nn.Conv2d(c_pb, 4, 1)
+
+    def _decode_plate_box(self, obj: torch.Tensor, ltrb: torch.Tensor) -> torch.Tensor:
+        """Argmax-cell decode -> [B, 5] = [conf, cx, cy, w, h], normalized to the crop."""
+        b, _, gh, gw = obj.shape
+        conf = obj.sigmoid().flatten(1)                     # [B, gh*gw]
+        best = conf.argmax(1)                               # [B]
+        conf = conf.gather(1, best[:, None])                # [B, 1]
+        # normalized ltrb distances, bounded to half the crop per side
+        d = ltrb.sigmoid().flatten(2) * 0.5                 # [B, 4, gh*gw]
+        d = d.gather(2, best[:, None, None].expand(-1, 4, -1)).squeeze(2)  # [B, 4]
+        ax = (best % gw).float().add(0.5).div(gw)
+        ay = best.div(gw, rounding_mode="floor").float().add(0.5).div(gh)
+        x0 = (ax - d[:, 0]).clamp(0, 1)
+        y0 = (ay - d[:, 1]).clamp(0, 1)
+        x1 = (ax + d[:, 2]).clamp(0, 1)
+        y1 = (ay + d[:, 3]).clamp(0, 1)
+        return torch.cat([conf, ((x0 + x1) / 2)[:, None], ((y0 + y1) / 2)[:, None],
+                          (x1 - x0)[:, None], (y1 - y0)[:, None]], 1)
 
     def forward(self, x: list[torch.Tensor] | torch.Tensor) -> dict[str, torch.Tensor]:
         """Return a dict of head logits (train) or probabilities (eval)."""
+        p4 = None
         if isinstance(x, list):
-            x = torch.cat(x, 1)
+            if self.plate_box:
+                p4, x = x
+            else:
+                x = torch.cat(x, 1)
         feat = self.drop(self.pool(self.conv(x)).flatten(1))
         logits = {
             "colour": self.colour(feat),
@@ -1320,6 +1359,10 @@ class VehicleClassify(nn.Module):
             "quality": self.quality(feat),
             "plate": self.plate(feat),
         }
+        if self.plate_box:
+            t = self.pb_stem(p4)
+            logits["plate_obj"] = self.pb_obj(t)     # [B, 1, gh, gw] raw
+            logits["plate_ltrb"] = self.pb_ltrb(t)   # [B, 4, gh, gw] raw
         if self.training:
             return logits
         probs = {
@@ -1331,6 +1374,8 @@ class VehicleClassify(nn.Module):
             "quality": logits["quality"].sigmoid(),
             "plate": logits["plate"].sigmoid(),
         }
+        if self.plate_box:
+            probs["plate_box"] = self._decode_plate_box(logits["plate_obj"], logits["plate_ltrb"])
         return probs if self.export else (probs, logits)
 
 

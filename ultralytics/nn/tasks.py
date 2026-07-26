@@ -1848,9 +1848,9 @@ def parse_model(d, ch, verbose=True):
         elif m is CBFuse:
             c2 = ch[f[-1]]
         elif m is VehicleClassify:
-            c1 = ch[f]
+            c1 = [ch[x] for x in f] if isinstance(f, list) else ch[f]
             args = [c1, *args]
-            c2 = c1
+            c2 = c1[-1] if isinstance(c1, list) else c1
         elif m in frozenset({TorchVision, Index}):
             c2 = args[0]
             c1 = ch[f]
