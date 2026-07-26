@@ -71,6 +71,7 @@ from ultralytics.nn.modules import (
     Segment,
     Segment26,
     TorchVision,
+    VehicleClassify,
     WorldDetect,
     YOLOEDetect,
     YOLOESegment,
@@ -1661,6 +1662,9 @@ def parse_model(d, ch, verbose=True):
     legacy = True  # backward compatibility for v3/v5/v8/v9 models
     max_channels = float("inf")
     nc, act, scales, end2end = (d.get(x) for x in ("nc", "activation", "scales", "end2end"))
+    colour_nc, type_nc, role_nc, make_nc, view_nc, quality_nc, plate_nc = (
+        d.get(x) for x in ("colour_nc", "type_nc", "role_nc", "make_nc", "view_nc", "quality_nc", "plate_nc")
+    )
     reg_max = d.get("reg_max", 16)
     attr_nc_yaml = int(d.get("attr_nc") or 0)
     depth, width, kpt_shape = (d.get(x, 1.0) for x in ("depth_multiple", "width_multiple", "kpt_shape"))
@@ -1840,6 +1844,10 @@ def parse_model(d, ch, verbose=True):
             args = [c1, c2, *args[1:]]
         elif m is CBFuse:
             c2 = ch[f[-1]]
+        elif m is VehicleClassify:
+            c1 = ch[f]
+            args = [c1, *args]
+            c2 = c1
         elif m in frozenset({TorchVision, Index}):
             c2 = args[0]
             c1 = ch[f]
@@ -1938,7 +1946,7 @@ def guess_model_task(model):
         for m in model.modules():
             if isinstance(m, (Segment, YOLOESegment)):
                 return "segment"
-            elif isinstance(m, Classify):
+            elif isinstance(m, (Classify, VehicleClassify)):
                 return "classify"
             elif isinstance(m, (PoseReID, Pose26ReID, PoseReIDV2, Pose26ReIDV2)):
                 return "posereid"
