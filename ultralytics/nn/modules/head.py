@@ -1244,6 +1244,96 @@ class Classify(nn.Module):
         return y if self.export else (y, x)
 
 
+class VehicleClassify(nn.Module):
+    """Multi-head vehicle metadata classifier on a YOLO classify backbone.
+
+    Shares the Classify stem (conv + GAP + dropout), then branches into:
+    - colour / special_role / plate: multi-label logits (sigmoid)
+    - type / make / view: categorical logits (softmax)
+    - quality: optional multi-label logits (often masked off in early training)
+    """
+
+    export = False
+
+    def __init__(
+        self,
+        c1: int,
+        colour_nc: int,
+        type_nc: int,
+        role_nc: int,
+        make_nc: int,
+        view_nc: int,
+        quality_nc: int = 7,
+        plate_nc: int = 2,
+        k: int = 1,
+        s: int = 1,
+        p: int | None = None,
+        g: int = 1,
+    ):
+        """Initialize vehicle multi-head classifier.
+
+        Args:
+            c1: Input channels from the backbone.
+            colour_nc: Colour head size (sigmoid).
+            type_nc: Type head size (softmax).
+            role_nc: Special-role head size (sigmoid).
+            make_nc: Manufacturer head size (softmax).
+            view_nc: View head size (softmax).
+            quality_nc: Quality head size (sigmoid).
+            plate_nc: Plate present/readable head size (sigmoid).
+            k: Stem conv kernel size.
+            s: Stem conv stride.
+            p: Stem conv padding.
+            g: Stem conv groups.
+        """
+        super().__init__()
+        c_ = 1280
+        self.colour_nc = colour_nc
+        self.type_nc = type_nc
+        self.role_nc = role_nc
+        self.make_nc = make_nc
+        self.view_nc = view_nc
+        self.quality_nc = quality_nc
+        self.plate_nc = plate_nc
+        self.conv = Conv(c1, c_, k, s, p, g)
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.drop = nn.Dropout(p=0.0, inplace=True)
+        self.colour = nn.Linear(c_, colour_nc)
+        self.type_head = nn.Linear(c_, type_nc)
+        self.special_role = nn.Linear(c_, role_nc)
+        self.make = nn.Linear(c_, make_nc)
+        self.view = nn.Linear(c_, view_nc)
+        self.quality = nn.Linear(c_, quality_nc)
+        self.plate = nn.Linear(c_, plate_nc)
+
+    def forward(self, x: list[torch.Tensor] | torch.Tensor) -> dict[str, torch.Tensor]:
+        """Return a dict of head logits (train) or probabilities (eval)."""
+        if isinstance(x, list):
+            x = torch.cat(x, 1)
+        feat = self.drop(self.pool(self.conv(x)).flatten(1))
+        logits = {
+            "colour": self.colour(feat),
+            "type": self.type_head(feat),
+            "special_role": self.special_role(feat),
+            "make": self.make(feat),
+            "view": self.view(feat),
+            "quality": self.quality(feat),
+            "plate": self.plate(feat),
+        }
+        if self.training:
+            return logits
+        probs = {
+            "colour": logits["colour"].sigmoid(),
+            "type": logits["type"].softmax(1),
+            "special_role": logits["special_role"].sigmoid(),
+            "make": logits["make"].softmax(1),
+            "view": logits["view"].softmax(1),
+            "quality": logits["quality"].sigmoid(),
+            "plate": logits["plate"].sigmoid(),
+        }
+        return probs if self.export else (probs, logits)
+
+
 class WorldDetect(Detect):
     """Head for integrating YOLO detection models with semantic understanding from text embeddings.
 
